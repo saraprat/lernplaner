@@ -141,3 +141,9 @@ textarea { display: block; width: 100%; margin-top: 6px; padding: 10px; border-r
 .tile.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--card)); }
 .tile.bad { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 22%, var(--card)); }
 .tile.done { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 20%, var(--card)); opacity: .55; }
+
+#toTop {
+  position: fixed; left: 18px; bottom: calc(76px + env(safe-area-inset-bottom)); width: 48px; height: 48px;
+  border-radius: 50%; border: 1px solid var(--line); background: var(--card); color: var(--text); font-size: 1.4rem;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .2); z-index: 5;
+}

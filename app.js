@@ -1192,6 +1192,11 @@
     } catch { alert('Die Datei konnte nicht gelesen werden.'); }
   });
 
+  /* Nach-oben-Knopf */
+  const toTop = $('#toTop');
+  addEventListener('scroll', () => { toTop.hidden = scrollY < 300; }, { passive: true });
+  toTop.addEventListener('click', () => scrollTo({ top: 0, behavior: 'smooth' }));
+
   document.addEventListener('visibilitychange', () => { if (!document.hidden && !['learn', 'write', 'pairs'].includes(view) && !dlg.open && !$('#timerDlg').open) render(); });
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
   render();
