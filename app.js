@@ -64,7 +64,7 @@
     $('#fab').hidden = view === 'settings' || view === 'learn';
     $('#view').innerHTML = ({ today: vToday, week: vWeek, tasks: vTasks, settings: vSettings, learn: vLearn })[view]();
     $('#view').className = view === 'learn' ? 'learn' : '';
-    if (view !== 'learn') stopSpeak();
+    if (view !== 'learn') stopSpeak(); else paintTimer();
   }
 
   /* ---------- Heute ---------- */
@@ -79,7 +79,7 @@
         ${actionable ? `<div class="tip">💡 ${esc(TIPS[s.phase])}</div>` : ''}
       </div>
       ${actionable ? `<div class="acts">
-        ${it.material ? `<button class="ic" data-act="mat" data-id="${esc(it.id)}" aria-label="Lernstoff" title="Lernstoff">📖</button>` : ''}
+        ${it.material ? `<button class="ic" data-act="mat" data-id="${esc(it.id)}" data-min="${s.minutes}" data-label="${esc(s.label)}" aria-label="Lernstoff" title="Lernstoff">📖</button>` : ''}
         <button class="ic" data-act="focus" ${data} aria-label="Fokus-Timer">▶</button>
         <button class="ic ok" data-act="done" ${data} aria-label="Erledigt">✓</button></div>` : ''}
     </div>`;
@@ -215,16 +215,16 @@
   }
 
   /* ---------- Aktionen ---------- */
-  function logSession(itemId, minutes, label) {
+  function logSession(itemId, minutes, label, rerender = true) {
     state.log.push({ id: uid(), itemId, date: T, minutes, label });
     const it = state.items.find(i => i.id === itemId);
     if (it && it.type === 'hausaufgabe' && P.logged(state, it.id) >= P.estimate(it)) it.done = true;
-    save(); render();
+    save(); if (rerender) render();
   }
 
   document.addEventListener('click', e => {
     const tab = e.target.closest('#tabs button');
-    if (tab) { view = tab.dataset.view; render(); scrollTo(0, 0); return; }
+    if (tab) { flushTimer(); view = tab.dataset.view; render(); scrollTo(0, 0); return; }
     const b = e.target.closest('[data-act]');
     if (!b) return;
     const d = b.dataset;
@@ -236,12 +236,14 @@
       case 'edit': openItem(d.id); break;
       case 'del': if (confirm('Diesen Eintrag löschen?')) { state.items = state.items.filter(i => i.id !== d.id); save(); render(); } break;
       case 'rmfree': state.settings.freeDays = state.settings.freeDays.filter(x => x !== d.date); save(); render(); break;
-      case 'mat': openMaterial(d.id); break;
-      case 'quiz': answerQuiz(b); break;
-      case 'card': markCard(b); break;
-      case 'speak': { const it = state.items.find(i => i.id === learnId); speak(speakText(it, d.kind, +d.i)); break; }
+      case 'mat': openMaterial(d.id, { min: +d.min || 0, label: d.label }); break;
+      case 'quiz': ensureRunning(); answerQuiz(b); break;
+      case 'card': ensureRunning(); markCard(b); break;
+      case 'speak': { ensureRunning(); const it = state.items.find(i => i.id === learnId); speak(speakText(it, d.kind, +d.i)); break; }
       case 'stopspeak': stopSpeak(); break;
-      case 'back': view = prevView; render(); scrollTo(0, 0); break;
+      case 'lgo': if (lt) { if (lt.start) ltPause(); else ltRun(); paintTimer(); } break;
+      case 'lstop': finishSession(); break;
+      case 'back': flushTimer(); view = prevView; render(); scrollTo(0, 0); break;
       case 'lfilter': onlyWeak = !onlyWeak; render(); break;
       case 'more': generateMore(b); break;
       case 'rmkey': try { localStorage.removeItem(API_KEY); } catch { /* egal */ } render(); break;
@@ -532,7 +534,9 @@
       <div class="hint" id="lpMsg" style="text-align:left"></div>`;
   }
 
-  function openMaterial(id) {
+  function openMaterial(id, ctx = {}) {
+    if (lt && lt.itemId !== id) flushTimer();
+    if (!lt) lt = { itemId: id, label: ctx.label || 'Lernstoff', target: ctx.min || 0, acc: 0, start: null, iv: null };
     if (view !== 'learn') prevView = view;
     learnId = id; onlyWeak = false; view = 'learn';
     render(); scrollTo(0, 0);
@@ -547,6 +551,11 @@
 
     let html = `<button class="ghost" data-act="back">← Zurück</button>
       <h1>📖 ${esc(it.subject)} – ${esc(it.title)}</h1>
+      <div class="card timerbar"><span id="ltime">00:00</span>
+        <button class="primary" data-act="lgo" id="lgo">▶ Lernen starten</button>
+        <button class="ok" data-act="lstop">⏹ Fertig</button>
+        <div class="hint" id="lnote"></div></div>
+      <div class="hint" style="text-align:left">Die Zeit startet automatisch, sobald du loslernst (Karte, Quiz, Vorlesen) oder auf Start tippst. Beim Verlassen der Seite wird sie als gelernte Zeit gespeichert.</div>
       <div class="card" id="lp">${progressHtml(it)}</div>`;
 
     if (tts) html += `<div class="card voice"><b>🔊 Vorlesen</b>
@@ -618,6 +627,56 @@
     box.classList.remove('known', 'unknown');
     box.classList.add(+btn.dataset.v ? 'known' : 'unknown');
     $('#lp').innerHTML = progressHtml(it);
+  }
+
+  /* Lernzeit-Stoppuhr: startet beim Loslernen, wird beim Verlassen gespeichert */
+  let lt = null;
+  const ltElapsed = () => (lt ? lt.acc + (lt.start ? Date.now() - lt.start : 0) : 0);
+  function ltPause() {
+    if (!lt || !lt.start) return;
+    lt.acc += Date.now() - lt.start;
+    lt.start = null;
+    clearInterval(lt.iv);
+  }
+  function ltRun() {
+    if (!lt || lt.start) return;
+    lt.start = Date.now();
+    lt.iv = setInterval(() => {
+      if (!lt) return;
+      if (lt.target && !lt.beeped && ltElapsed() >= lt.target * 60000) {
+        lt.beeped = true; beep();
+        lt.note = '🎉 Geplante Zeit erreicht. Du kannst weiterlernen oder auf „Fertig“ tippen.';
+      }
+      paintTimer();
+    }, 1000);
+    paintTimer();
+  }
+  const ensureRunning = () => { if (lt && !lt.start && !lt.acc) ltRun(); };
+  function paintTimer() {
+    const el = $('#ltime');
+    if (!el || !lt) return;
+    const f = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+    el.textContent = f(ltElapsed()) + (lt.target ? ` / ${f(lt.target * 60000)}` : '');
+    $('#lgo').textContent = lt.start ? '⏸ Pause' : ltElapsed() ? '▶ Weiter' : '▶ Lernen starten';
+    $('#lnote').textContent = lt.note || '';
+  }
+  // beim Verlassen der Lernseite: erfasste Zeit als gelernt speichern
+  function flushTimer() {
+    if (!lt) return;
+    ltPause();
+    const minutes = Math.round(lt.acc / 60000);
+    const { itemId, label } = lt;
+    lt = null;
+    if (minutes >= 1) logSession(itemId, minutes, label, false);
+  }
+  function finishSession() {
+    if (!lt) return;
+    ltPause();
+    const minutes = Math.round(lt.acc / 60000);
+    if (minutes < 1) { lt.note = 'Noch keine Lernzeit erfasst.'; paintTimer(); return; }
+    const { itemId, label } = lt;
+    lt = { itemId, label, target: 0, acc: 0, start: null, iv: null, note: `✓ ${minutes} Min Lernzeit gespeichert. Gut gemacht!` };
+    logSession(itemId, minutes, label);
   }
 
   /* Vorlesen (Browser-Sprachausgabe) */
