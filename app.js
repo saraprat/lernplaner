@@ -425,7 +425,7 @@
         'Lies alles genau und erstelle auf Deutsch den Lernstoff: eine verständliche Zusammenfassung, die wichtigsten Merkpunkte, ' +
         '8–15 Karteikarten zum Selbstabfragen und 5–8 Multiple-Choice-Fragen mit je 4 Antworten und kurzer Erklärung. ' +
         'Handelt es sich um Aufgaben, erkläre die nötigen Methoden und den Lösungsweg-Ansatz, verrate aber nicht einfach alle Lösungen. ' +
-        'Schätze die Lernzeit realistisch. Rufe das Tool „lernstoff“ auf.',
+        'Schätze die Lernzeit realistisch. Antworte ausschließlich, indem du das Tool „lernstoff“ aufrufst, ohne zusätzlichen Text.',
     });
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -437,7 +437,6 @@
       },
       body: JSON.stringify({
         model: MODEL, max_tokens: 8000, tools: [TOOL],
-        tool_choice: { type: 'tool', name: 'lernstoff' },
         messages: [{ role: 'user', content }],
       }),
     });
