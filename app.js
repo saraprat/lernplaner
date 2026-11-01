@@ -398,7 +398,11 @@
         minutes: { type: 'integer', description: 'Realistische Gesamt-Lernzeit in Minuten für diesen Stoff bzw. diese Aufgaben' },
         summary: { type: 'string', description: 'Verständliche Zusammenfassung, 5–10 Sätze' },
         points: { type: 'array', items: { type: 'string' }, description: 'Die wichtigsten Merkpunkte/Formeln/Begriffe' },
-        cards: { type: 'array', items: { type: 'object', required: ['q', 'a'], properties: { q: { type: 'string' }, a: { type: 'string' } } } },
+        cards: { type: 'array', items: { type: 'object', required: ['q', 'a'], properties: {
+          q: { type: 'string', description: 'Frage; nennt klar, welche Antwortform gewünscht ist (z. B. „Übersetze: …“, „Ergänze: …“, „Wie heißt …?“)' },
+          a: { type: 'string', description: 'Vollständige Antwort bzw. Erklärung' },
+          key: { type: 'string', description: 'Sehr kurze Prüfantwort (Wort, Zahl oder Formel, max. 3 Wörter), die man eintippen oder schreiben kann; leer lassen, wenn es keine kurze eindeutige Antwort gibt' },
+        } } },
         quiz: {
           type: 'array',
           items: {
@@ -453,6 +457,8 @@
         `${ctx.subject ? `, Fach: ${ctx.subject}` : ''}${ctx.title ? `, Thema: ${ctx.title}` : ''}).\n` +
         'Lies alles genau und erstelle auf Deutsch den Lernstoff: eine verständliche Zusammenfassung, die wichtigsten Merkpunkte, ' +
         '8–15 Karteikarten zum Selbstabfragen und 5–8 Multiple-Choice-Fragen mit je 4 Antworten und kurzer Erklärung. ' +
+        'Jede Karteikarten-Frage muss für sich allein verständlich sein und die gewünschte Antwortform nennen (z. B. „Übersetze: …“, „Ergänze den Satz: …“, „Wie heißt …?“). ' +
+        'Gib bei jeder Karte, wenn es eine kurze eindeutige Antwort gibt, zusätzlich im Feld „key“ nur diese kurze Antwort an (max. 3 Wörter). ' +
         'Handelt es sich um Aufgaben, erkläre die nötigen Methoden und den Lösungsweg-Ansatz, verrate aber nicht einfach alle Lösungen. ' +
         'Schätze die Lernzeit realistisch. Antworte ausschließlich, indem du das Tool „lernstoff“ aufrufst, ohne zusätzlichen Text.',
     });
@@ -492,7 +498,7 @@
       minutes: Math.min(1200, Math.max(10, Math.round((+m.minutes || 60) / 5) * 5)),
       summary: str(m.summary),
       points: (m.points || []).map(str).filter(Boolean),
-      cards: (m.cards || []).map(c => ({ q: str(c.q), a: str(c.a) })).filter(c => c.q && c.a),
+      cards: (m.cards || []).map(c => ({ q: str(c.q), a: str(c.a), key: str(c.key) })).filter(c => c.q && c.a),
       quiz: (m.quiz || []).filter(q => Array.isArray(q.options) && q.options.length >= 2).map(q => ({
         q: str(q.q), options: q.options.slice(0, 4).map(str),
         answer: Math.min(q.options.length - 1, Math.max(0, +q.answer || 0)), why: str(q.why),
@@ -500,7 +506,7 @@
     };
   }
 
-  const normCards = a => (a || []).map(c => ({ q: str(c.q), a: str(c.a) })).filter(c => c.q && c.a);
+  const normCards = a => (a || []).map(c => ({ q: str(c.q), a: str(c.a), key: str(c.key) })).filter(c => c.q && c.a);
   const normQuiz = a => (a || []).filter(q => Array.isArray(q.options) && q.options.length >= 2).map(q => ({
     q: str(q.q), options: q.options.slice(0, 4).map(str),
     answer: Math.min(q.options.length - 1, Math.max(0, +q.answer || 0)), why: str(q.why),
@@ -799,6 +805,11 @@
     if (mode === 'cloze') items = makeCloze(m);
     else {
       let idx = m.cards.map((_, i) => i);
+      if (mode === 'type' || mode === 'write') {
+        // ganze Sätze lassen sich nicht fair per Tippen/Schreiben prüfen
+        idx = idx.filter(i => shortAns(wantOf(m.cards[i], wr ? wr.swap : false)));
+        if (!idx.length) { lpMsg('Die Antworten sind hier ganze Sätze und zu lang zum Tippen oder Schreiben. Nimm Karteikarten oder Multiple Choice.'); return; }
+      }
       if (mode === 'due') idx = idx.filter(i => isDue(it, i));
       else if (idx.some(i => p.cards[i] !== 1)) idx = idx.filter(i => p.cards[i] !== 1);
       items = shuffle(idx).map(i => ({ i }));
@@ -813,8 +824,12 @@
     const cur = wr.items[wr.pos];
     if (cur.cloze) return { ask: cur.ask, want: cur.want };
     const c = it.material.cards[cur.i];
-    return wr.swap ? { ask: c.a, want: c.q } : { ask: c.q, want: c.a };
+    return wr.swap ? { ask: c.a, want: c.q } : { ask: c.q, want: c.key || c.a, full: c.a };
   }
+
+  // kurze Prüfantwort: bei KI-Karten das Feld „key“, sonst die Antwort selbst
+  const wantOf = (c, swap) => (swap ? c.q : c.key || c.a);
+  const shortAns = s => s.length <= 40 && s.split(/\s+/).length <= 5;
 
   function makeOpts(it, want) {
     const side = wr.swap ? 'q' : 'a';
@@ -858,23 +873,25 @@
       `<label class="inl"><input type="checkbox" data-set="wswap" ${wr.swap ? 'checked' : ''}> Richtung tauschen (Frage ↔ Antwort)</label>`;
     return html + `<div class="muted">Aufgabe ${wr.pos + 1} von ${n} · ✓ ${wr.ok} · ✗ ${wr.bad}</div>
       <div class="bar"><i style="width:${Math.round(wr.pos / n * 100)}%"></i></div>${swapBox}
-      <div class="card"><div class="sub">${wr.mode === 'cloze' ? 'Ergänze die Lücke:' : wr.mode === 'flash' ? 'Frage:' : 'Antworte zu:'}</div>
+      <div class="card"><div class="sub">${wr.mode === 'cloze' ? 'Ergänze die Lücke:' : wr.mode === 'flash' ? 'Frage:' : t.full && t.full !== t.want ? 'Kurze Antwort (Stichwort) zu:' : 'Antworte zu:'}</div>
         <div class="ctop"><div class="bigprompt">${esc(t.ask)}</div>${speakBtn}</div></div>
       ${input}<div id="wres"></div>`;
   }
 
   const wres = html => { const el = $('#wres'); if (el) el.innerHTML = html; };
-  const wokHtml = (got, want, v) => `<div class="card lcard known"><b>✓ Richtig!</b>
+  const wokHtml = (got, want, v, more = '') => `<div class="card lcard known"><b>✓ Richtig!</b>
     ${got ? `<div>Erkannt: „${esc(got)}“</div>` : ''}
-    ${v === 'case' ? `<div class="why">Achte auf die Groß-/Kleinschreibung: ${esc(want)}</div>` : ''}
+    ${v === 'case' ? `<div class="why">Achte auf die Groß-/Kleinschreibung: ${esc(want)}</div>` : ''}${more}
     <div class="row"><button class="primary" data-act="wnext">Weiter →</button></div></div>`;
-  function showVerdict(got, want, v, canOverride) {
+  function showVerdict(got, want, v) {
+    const t = drillTexts(state.items.find(i => i.id === learnId));
+    const more = t.full && t.full !== want ? `<div class="why">Vollständige Antwort: ${esc(t.full)}</div>` : '';
     wr.verdict = v === 'bad' ? 'bad' : 'ok';
-    wres(v !== 'bad' ? wokHtml(got, want, v) : `<div class="card lcard unknown"><b>✗ Noch nicht ganz.</b>
-      <div>Eingabe: „${esc(got)}“</div><div>Richtig wäre: <b>${esc(want)}</b></div>
+    wres(v !== 'bad' ? wokHtml(got, want, v, more) : `<div class="card lcard unknown"><b>✗ Noch nicht ganz.</b>
+      <div>Eingabe: „${esc(got)}“</div><div>Richtig wäre: <b>${esc(want)}</b></div>${more}
       <div class="row" style="flex-wrap:wrap">
         <button class="ghost" data-act="wretry">Nochmal versuchen</button>
-        ${canOverride ? '<button class="ghost" data-act="woverride">Erkennung falsch, war richtig</button>' : ''}
+        <button class="ghost" data-act="woverride">Doch richtig (gleichwertig / Erkennung falsch)</button>
         <button class="primary" data-act="wnext">Weiter →</button></div></div>`);
   }
 
@@ -882,7 +899,7 @@
     const ti = $('#tinp');
     if (!ti || !ti.value.trim()) { wres('<div class="alert">Tippe zuerst deine Antwort ein.</div>'); return; }
     const want = drillTexts(state.items.find(i => i.id === learnId)).want;
-    showVerdict(ti.value.trim(), want, compareWord(ti.value, want), false);
+    showVerdict(ti.value.trim(), want, compareWord(ti.value, want));
   }
   document.addEventListener('keydown', e => {
     if (e.key === 'Enter' && e.target.id === 'tinp') { e.preventDefault(); checkTyped(); }
@@ -1017,7 +1034,7 @@
           'Antworte ausschließlich, indem du das Tool „handschrift“ aufrufst, ohne zusätzlichen Text.' },
       ], HAND_TOOL, 300);
       const got = str(r.text), want = drillTexts(state.items.find(i => i.id === learnId)).want;
-      showVerdict(got, want, compareWord(got, want), true);
+      showVerdict(got, want, compareWord(got, want));
     } catch (err) {
       wres(`<div class="alert">⚠ ${esc(err.message || 'Die Erkennung hat nicht geklappt.')}</div>`);
     } finally {
@@ -1136,6 +1153,7 @@
           `Diese Aufgaben hat er nicht gewusst oder falsch beantwortet:\n- ${weak.join('\n- ')}\n\n` +
           'Erkläre die zugrunde liegenden Konzepte noch einmal anders und einfacher (explain). Erstelle dann neue Übungen, die dieselben Konzepte ' +
           'anders abfragen, damit er nicht nur Antworten auswendig lernt: 1–2 neue Karteikarten und 1–2 Multiple-Choice-Fragen (4 Antworten, mit Erklärung) pro Schwäche. ' +
+          'Jede Karteikarten-Frage muss die gewünschte Antwortform nennen; gib bei einer kurzen eindeutigen Antwort zusätzlich das Feld „key“ an. ' +
           'Antworte ausschließlich, indem du das Tool „uebungen“ aufrufst, ohne zusätzlichen Text.',
       }], MORE_TOOL);
       const cards = normCards(r.cards).map(c => ({ ...c, extra: true }));
