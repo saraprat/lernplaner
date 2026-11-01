@@ -50,6 +50,13 @@
     <label>Geschätzte Lernzeit in Minuten <small>(leer = automatisch)</small>
       <input name="effort" type="number" min="5" step="5" inputmode="numeric" placeholder="automatisch">
     </label>
+    <div class="upload">
+      <label>Aufgabenblatt / Lernstoff hochladen <small>(PDF, Foto oder Text)</small>
+        <input type="file" id="matFiles" multiple accept="application/pdf,image/*,.txt,.md">
+      </label>
+      <button type="button" class="ghost" id="matGo">✨ Mit KI auswerten</button>
+      <div class="hint" id="matStatus"></div>
+    </div>
     <div class="row">
       <button type="button" class="ghost" id="itemCancel">Abbrechen</button>
       <button type="submit" class="primary">Speichern</button>
@@ -69,6 +76,11 @@
     </div>
     <p class="hint">Handy in den Flugmodus oder weglegen – du schaffst das.</p>
   </div>
+</dialog>
+
+<dialog id="matDlg">
+  <div id="matBody"></div>
+  <div class="row"><button class="ghost" id="matClose">Schließen</button></div>
 </dialog>
 
 <input type="file" id="importFile" accept="application/json" hidden>

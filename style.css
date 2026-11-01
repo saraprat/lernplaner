@@ -100,3 +100,17 @@ input[type=range] { padding: 0; accent-color: var(--accent); }
 .free { display: inline-flex; align-items: center; gap: 4px; }
 .free button { border: 0; background: none; color: var(--bad); }
 .tipcard b { display: block; }
+
+.upload { border: 1px dashed var(--line); border-radius: 12px; padding: 0 12px 12px; margin: 12px 0; }
+.upload .ghost { width: 100%; }
+.upload .hint { text-align: left; margin-top: 6px; }
+#matBody h2:first-child { margin-top: 0; }
+#matBody ul { padding-left: 20px; margin: 6px 0; }
+details { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; margin: 6px 0; }
+summary { cursor: pointer; font-weight: 600; }
+details p { margin: 6px 0 0; color: var(--muted); }
+.qopt { display: block; width: 100%; text-align: left; margin: 4px 0; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); }
+.qopt.right { background: color-mix(in srgb, var(--ok) 25%, var(--card)); border-color: var(--ok); }
+.qopt.wrong { background: color-mix(in srgb, var(--bad) 25%, var(--card)); border-color: var(--bad); }
+.why { font-size: .85rem; color: var(--muted); margin-top: 4px; }
+dialog#matDlg { max-height: 88vh; overflow: auto; }

@@ -77,6 +77,7 @@
         ${actionable ? `<div class="tip">💡 ${esc(TIPS[s.phase])}</div>` : ''}
       </div>
       ${actionable ? `<div class="acts">
+        ${it.material ? `<button class="ic" data-act="mat" data-id="${esc(it.id)}" aria-label="Lernstoff" title="Lernstoff">📖</button>` : ''}
         <button class="ic" data-act="focus" ${data} aria-label="Fokus-Timer">▶</button>
         <button class="ic ok" data-act="done" ${data} aria-label="Erledigt">✓</button></div>` : ''}
     </div>`;
@@ -163,6 +164,7 @@
         <div class="meta">${fmtMin(lg)} von ca. ${fmtMin(est)} gelernt</div>
       </div>
       <div class="acts">
+        ${it.material ? `<button class="ic" data-act="mat" data-id="${esc(it.id)}" aria-label="Lernstoff" title="Lernstoff">📖</button>` : ''}
         <button class="ic" data-act="toggle" data-id="${esc(it.id)}" aria-label="Als erledigt markieren" title="${it.done ? 'Wieder öffnen' : 'Erledigt'}">${it.done ? '↩' : '✓'}</button>
         <button class="ic" data-act="edit" data-id="${esc(it.id)}" aria-label="Bearbeiten">✎</button>
         <button class="ic danger" data-act="del" data-id="${esc(it.id)}" aria-label="Löschen">🗑</button>
@@ -197,6 +199,10 @@
       <input type="date" data-set="addfree" min="${T}" style="margin-top:8px">
       <h2>Lerntipps</h2>
       ${GENERAL_TIPS.map(([t, d]) => `<div class="card tipcard"><b>${t}</b><span class="muted">${d}</span></div>`).join('')}
+      <h2>KI-Auswertung (Claude)</h2>
+      <div class="muted">Für „Mit KI auswerten“ beim Hochladen von Aufgaben und Lernstoff brauchst du einen API-Key von console.anthropic.com. Er bleibt nur in diesem Browser (nicht im Backup). Die hochgeladenen Dateien werden zur Auswertung an Anthropic gesendet. Setze dort am besten ein kleines Ausgabelimit.</div>
+      <input type="password" data-set="apikey" autocomplete="off" placeholder="${getKey() ? '••••••• gespeichert – zum Ändern neu eingeben' : 'sk-ant-…'}">
+      ${getKey() ? '<div class="row" style="justify-content:flex-start"><button class="ghost danger" data-act="rmkey">Key entfernen</button></div>' : ''}
       <h2>Daten</h2>
       <div class="muted">Deine Einträge werden nur in diesem Browser gespeichert. Mit einem Backup kannst du sie auf ein anderes Gerät mitnehmen.</div>
       <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
@@ -228,6 +234,9 @@
       case 'edit': openItem(d.id); break;
       case 'del': if (confirm('Diesen Eintrag löschen?')) { state.items = state.items.filter(i => i.id !== d.id); save(); render(); } break;
       case 'rmfree': state.settings.freeDays = state.settings.freeDays.filter(x => x !== d.date); save(); render(); break;
+      case 'mat': openMaterial(d.id); break;
+      case 'quiz': answerQuiz(b); break;
+      case 'rmkey': try { localStorage.removeItem(API_KEY); } catch { /* egal */ } render(); break;
       case 'export': exportData(); break;
       case 'import': $('#importFile').click(); break;
       case 'reset': if (confirm('Wirklich ALLE Einträge und Einstellungen löschen?')) { state = { settings: DEF(), items: [], log: [] }; save(); render(); } break;
@@ -238,6 +247,7 @@
     const t = e.target, s = state.settings;
     if (t.dataset.wd !== undefined) s.week[+t.dataset.wd] = Math.max(0, +t.value || 0);
     else if (t.dataset.set === 'name') s.name = t.value.trim() || 'Vincenzo';
+    else if (t.dataset.set === 'apikey') { if (t.value.trim()) { try { localStorage.setItem(API_KEY, t.value.trim()); } catch { alert('Der Key konnte nicht gespeichert werden.'); } } }
     else if (t.dataset.set === 'chunk') s.chunk = Math.min(90, Math.max(15, +t.value || 40));
     else if (t.dataset.set === 'addfree') { if (t.value && !s.freeDays.includes(t.value)) s.freeDays.push(t.value); }
     else return;
@@ -260,6 +270,9 @@
     form.difficulty.value = it ? it.difficulty : 3;
     form.effort.value = it && it.effort ? it.effort : '';
     $('#diffOut').textContent = form.difficulty.value;
+    pendingMaterial = null;
+    $('#matFiles').value = '';
+    $('#matStatus').textContent = it && it.material ? '📖 Lernstoff vorhanden. Neue Dateien ersetzen ihn.' : '';
     dlg.showModal();
   }
   form.difficulty.addEventListener('input', () => { $('#diffOut').textContent = form.difficulty.value; });
@@ -275,6 +288,7 @@
       difficulty: +form.difficulty.value,
       effort: form.effort.value ? +form.effort.value : 0,
     };
+    if (pendingMaterial) data.material = pendingMaterial;
     if (editing) Object.assign(state.items.find(i => i.id === editing), data);
     else state.items.push({ id: uid(), done: false, created: Date.now(), ...data });
     save(); dlg.close(); render();
@@ -333,6 +347,179 @@
     logSession(itemId, minutes, label);
   });
   $('#timerDlg').addEventListener('close', tmStop);
+
+  /* ---------- KI-Auswertung hochgeladener Dateien ---------- */
+  const API_KEY = 'lernplaner.apikey';
+  const MODEL = 'claude-sonnet-5-5';
+  const MAX_FILE = 20 * 1024 * 1024;
+  let pendingMaterial = null;
+
+  function getKey() { try { return localStorage.getItem(API_KEY) || ''; } catch { return ''; } }
+
+  const TOOL = {
+    name: 'lernstoff',
+    description: 'Liefert den aus den Unterlagen erstellten Lernstoff.',
+    input_schema: {
+      type: 'object',
+      required: ['subject', 'title', 'difficulty', 'minutes', 'summary', 'points', 'cards', 'quiz'],
+      properties: {
+        subject: { type: 'string', description: 'Schulfach, kurz (z. B. Mathe)' },
+        title: { type: 'string', description: 'Thema in max. 8 Wörtern' },
+        difficulty: { type: 'integer', minimum: 1, maximum: 5 },
+        minutes: { type: 'integer', description: 'Realistische Gesamt-Lernzeit in Minuten für diesen Stoff bzw. diese Aufgaben' },
+        summary: { type: 'string', description: 'Verständliche Zusammenfassung, 5–10 Sätze' },
+        points: { type: 'array', items: { type: 'string' }, description: 'Die wichtigsten Merkpunkte/Formeln/Begriffe' },
+        cards: { type: 'array', items: { type: 'object', required: ['q', 'a'], properties: { q: { type: 'string' }, a: { type: 'string' } } } },
+        quiz: {
+          type: 'array',
+          items: {
+            type: 'object', required: ['q', 'options', 'answer', 'why'],
+            properties: {
+              q: { type: 'string' },
+              options: { type: 'array', items: { type: 'string' }, minItems: 4, maxItems: 4 },
+              answer: { type: 'integer', minimum: 0, maximum: 3 },
+              why: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  };
+
+  const toBase64 = blob => new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1]);
+    r.onerror = () => rej(new Error('Datei konnte nicht gelesen werden.'));
+    r.readAsDataURL(blob);
+  });
+
+  async function fileToBlock(f) {
+    const name = f.name.toLowerCase();
+    if (f.type.startsWith('image/')) {
+      // verkleinern, damit Handy-Fotos nicht riesig übertragen werden
+      const bmp = await createImageBitmap(f);
+      const k = Math.min(1, 1568 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+      c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+      const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.85));
+      return { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: await toBase64(blob) } };
+    }
+    if (f.size > MAX_FILE) throw new Error(`${f.name} ist zu groß (max. 20 MB).`);
+    if (f.type === 'application/pdf' || name.endsWith('.pdf')) {
+      return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: await toBase64(f) } };
+    }
+    if (f.type.startsWith('text/') || name.endsWith('.txt') || name.endsWith('.md')) {
+      return { type: 'text', text: `Datei „${f.name}“:\n${(await f.text()).slice(0, 100000)}` };
+    }
+    throw new Error(`${f.name}: Dieser Dateityp wird nicht unterstützt (PDF, Foto oder Text).`);
+  }
+
+  async function analyze(files, ctx) {
+    const content = [];
+    for (const f of files) content.push(await fileToBlock(f));
+    content.push({
+      type: 'text',
+      text: `Du bist ein geduldiger Lerncoach für einen Schüler. Die Unterlagen oben sind Aufgaben und/oder Lernstoff (Art: ${ctx.type}` +
+        `${ctx.subject ? `, Fach: ${ctx.subject}` : ''}${ctx.title ? `, Thema: ${ctx.title}` : ''}).\n` +
+        'Lies alles genau und erstelle auf Deutsch den Lernstoff: eine verständliche Zusammenfassung, die wichtigsten Merkpunkte, ' +
+        '8–15 Karteikarten zum Selbstabfragen und 5–8 Multiple-Choice-Fragen mit je 4 Antworten und kurzer Erklärung. ' +
+        'Handelt es sich um Aufgaben, erkläre die nötigen Methoden und den Lösungsweg-Ansatz, verrate aber nicht einfach alle Lösungen. ' +
+        'Schätze die Lernzeit realistisch. Rufe das Tool „lernstoff“ auf.',
+    });
+    const r = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': getKey(),
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true',
+      },
+      body: JSON.stringify({
+        model: MODEL, max_tokens: 8000, tools: [TOOL],
+        tool_choice: { type: 'tool', name: 'lernstoff' },
+        messages: [{ role: 'user', content }],
+      }),
+    });
+    if (!r.ok) {
+      let msg = '';
+      try { msg = (await r.json()).error.message; } catch { /* keine Details */ }
+      throw new Error(r.status === 401 ? 'Der API-Key ist ungültig.' : msg || `Fehler ${r.status}`);
+    }
+    const tu = (await r.json()).content.find(c => c.type === 'tool_use');
+    if (!tu) throw new Error('Die KI hat keinen Lernstoff geliefert. Bitte nochmal versuchen.');
+    return tu.input;
+  }
+
+  const str = x => String(x ?? '').trim();
+  function normalize(m) {
+    return {
+      subject: str(m.subject).slice(0, 30),
+      title: str(m.title).slice(0, 80),
+      difficulty: Math.min(5, Math.max(1, Math.round(+m.difficulty || 3))),
+      minutes: Math.min(1200, Math.max(10, Math.round((+m.minutes || 60) / 5) * 5)),
+      summary: str(m.summary),
+      points: (m.points || []).map(str).filter(Boolean),
+      cards: (m.cards || []).map(c => ({ q: str(c.q), a: str(c.a) })).filter(c => c.q && c.a),
+      quiz: (m.quiz || []).filter(q => Array.isArray(q.options) && q.options.length >= 2).map(q => ({
+        q: str(q.q), options: q.options.slice(0, 4).map(str),
+        answer: Math.min(q.options.length - 1, Math.max(0, +q.answer || 0)), why: str(q.why),
+      })),
+    };
+  }
+
+  $('#matGo').addEventListener('click', async () => {
+    const status = $('#matStatus'), files = [...$('#matFiles').files];
+    if (!getKey()) { status.textContent = 'Trage zuerst unter „Mehr“ deinen API-Key ein.'; return; }
+    if (!files.length) { status.textContent = 'Wähle zuerst eine Datei aus.'; return; }
+    const btn = $('#matGo');
+    btn.disabled = true;
+    status.textContent = '⏳ Die KI liest deine Unterlagen … das kann bis zu einer Minute dauern.';
+    try {
+      const m = normalize(await analyze(files, { type: TYPES[form.type.value].label, subject: form.subject.value.trim(), title: form.title.value.trim() }));
+      pendingMaterial = { summary: m.summary, points: m.points, cards: m.cards, quiz: m.quiz };
+      if (!form.subject.value.trim()) form.subject.value = m.subject;
+      if (!form.title.value.trim()) form.title.value = m.title;
+      if (!form.effort.value) form.effort.value = m.minutes;
+      if (!editing) { form.difficulty.value = m.difficulty; $('#diffOut').textContent = m.difficulty; }
+      status.textContent = `✓ Fertig: ${m.cards.length} Karteikarten, ${m.quiz.length} Quizfragen. Wird beim Speichern zum Eintrag hinzugefügt.`;
+    } catch (err) {
+      status.textContent = `⚠ ${err.message || 'Auswertung fehlgeschlagen.'}`;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function openMaterial(id) {
+    const it = state.items.find(i => i.id === id);
+    if (!it || !it.material) return;
+    const m = it.material;
+    $('#matBody').innerHTML = `<h2>📖 ${esc(it.subject)} – ${esc(it.title)}</h2>
+      ${m.summary ? `<h2>Zusammenfassung</h2><p>${esc(m.summary).replace(/\n/g, '<br>')}</p>` : ''}
+      ${m.points.length ? `<h2>Merkpunkte</h2><ul>${m.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
+      ${m.cards.length ? `<h2>Karteikarten</h2><div class="muted">Erst überlegen, dann aufklappen.</div>${m.cards.map(c => `<details><summary>${esc(c.q)}</summary><p>${esc(c.a)}</p></details>`).join('')}` : ''}
+      ${m.quiz.length ? `<h2>Quiz</h2>${m.quiz.map((q, qi) => `<div class="card" data-quiz="${qi}"><b>${esc(q.q)}</b>
+        ${q.options.map((o, oi) => `<button class="qopt" data-act="quiz" data-id="${esc(it.id)}" data-qi="${qi}" data-oi="${oi}">${esc(o)}</button>`).join('')}
+        <div class="why" hidden></div></div>`).join('')}` : ''}`;
+    $('#matDlg').showModal();
+    $('#matDlg').scrollTop = 0;
+  }
+
+  function answerQuiz(btn) {
+    const it = state.items.find(i => i.id === btn.dataset.id);
+    const q = it && it.material.quiz[+btn.dataset.qi];
+    const box = btn.closest('[data-quiz]');
+    if (!q || box.dataset.done) return;
+    box.dataset.done = '1';
+    box.querySelectorAll('.qopt').forEach((b, i) => {
+      if (i === q.answer) b.classList.add('right');
+      else if (b === btn) b.classList.add('wrong');
+    });
+    const why = $('.why', box);
+    why.textContent = (+btn.dataset.oi === q.answer ? '✓ Richtig. ' : '✗ Leider falsch. ') + q.why;
+    why.hidden = false;
+  }
+  $('#matClose').addEventListener('click', () => $('#matDlg').close());
 
   /* ---------- Backup ---------- */
   function exportData() {
