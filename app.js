@@ -61,8 +61,10 @@
     T = P.ymd(new Date());
     PLAN = P.plan(state, T);
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
-    $('#fab').hidden = view === 'settings';
-    $('#view').innerHTML = ({ today: vToday, week: vWeek, tasks: vTasks, settings: vSettings })[view]();
+    $('#fab').hidden = view === 'settings' || view === 'learn';
+    $('#view').innerHTML = ({ today: vToday, week: vWeek, tasks: vTasks, settings: vSettings, learn: vLearn })[view]();
+    $('#view').className = view === 'learn' ? 'learn' : '';
+    if (view !== 'learn') stopSpeak();
   }
 
   /* ---------- Heute ---------- */
@@ -73,7 +75,7 @@
       <div class="main">
         <div class="sub">${esc(it.subject)} · ${TYPES[it.type].label}</div>
         <div class="ttl">${esc(it.title)}</div>
-        <div class="meta">${esc(s.label)} · ${fmtMin(s.minutes)}${s.over ? ' · ⚠ über deiner Lernzeit' : ''}</div>
+        <div class="meta">${esc(s.label)} · ${fmtMin(s.minutes)}${it.material ? ` · 📖 ${progressOf(it).pct}% gemeistert` : ''}${s.over ? ' · ⚠ über deiner Lernzeit' : ''}</div>
         ${actionable ? `<div class="tip">💡 ${esc(TIPS[s.phase])}</div>` : ''}
       </div>
       ${actionable ? `<div class="acts">
@@ -161,7 +163,7 @@
         <div class="ttl">${esc(it.title)}</div>
         <div>${dueChip(it)}<span class="chip">Schwierigkeit ${it.difficulty}/5</span></div>
         <div class="bar"><i style="width:${pct}%"></i></div>
-        <div class="meta">${fmtMin(lg)} von ca. ${fmtMin(est)} gelernt</div>
+        <div class="meta">${fmtMin(lg)} von ca. ${fmtMin(est)} gelernt${it.material ? ` · 📖 ${progressOf(it).pct}% Lernstoff gemeistert` : ''}</div>
       </div>
       <div class="acts">
         ${it.material ? `<button class="ic" data-act="mat" data-id="${esc(it.id)}" aria-label="Lernstoff" title="Lernstoff">📖</button>` : ''}
@@ -236,6 +238,12 @@
       case 'rmfree': state.settings.freeDays = state.settings.freeDays.filter(x => x !== d.date); save(); render(); break;
       case 'mat': openMaterial(d.id); break;
       case 'quiz': answerQuiz(b); break;
+      case 'card': markCard(b); break;
+      case 'speak': { const it = state.items.find(i => i.id === learnId); speak(speakText(it, d.kind, +d.i)); break; }
+      case 'stopspeak': stopSpeak(); break;
+      case 'back': view = prevView; render(); scrollTo(0, 0); break;
+      case 'lfilter': onlyWeak = !onlyWeak; render(); break;
+      case 'more': generateMore(b); break;
       case 'rmkey': try { localStorage.removeItem(API_KEY); } catch { /* egal */ } render(); break;
       case 'export': exportData(); break;
       case 'import': $('#importFile').click(); break;
@@ -245,6 +253,7 @@
 
   document.addEventListener('change', e => {
     const t = e.target, s = state.settings;
+    if (t.dataset.set === 'rate') { speechRate = +t.value; return; }
     if (t.dataset.wd !== undefined) s.week[+t.dataset.wd] = Math.max(0, +t.value || 0);
     else if (t.dataset.set === 'name') s.name = t.value.trim() || 'Vincenzo';
     else if (t.dataset.set === 'apikey') { if (t.value.trim()) { try { localStorage.setItem(API_KEY, t.value.trim()); } catch { alert('Der Key konnte nicht gespeichert werden.'); } } }
@@ -427,6 +436,10 @@
         'Handelt es sich um Aufgaben, erkläre die nötigen Methoden und den Lösungsweg-Ansatz, verrate aber nicht einfach alle Lösungen. ' +
         'Schätze die Lernzeit realistisch. Antworte ausschließlich, indem du das Tool „lernstoff“ aufrufst, ohne zusätzlichen Text.',
     });
+    return callClaude(content, TOOL);
+  }
+
+  async function callClaude(content, tool) {
     const r = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -436,7 +449,7 @@
         'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
-        model: MODEL, max_tokens: 8000, tools: [TOOL],
+        model: MODEL, max_tokens: 8000, tools: [tool],
         messages: [{ role: 'user', content }],
       }),
     });
@@ -467,6 +480,12 @@
     };
   }
 
+  const normCards = a => (a || []).map(c => ({ q: str(c.q), a: str(c.a) })).filter(c => c.q && c.a);
+  const normQuiz = a => (a || []).filter(q => Array.isArray(q.options) && q.options.length >= 2).map(q => ({
+    q: str(q.q), options: q.options.slice(0, 4).map(str),
+    answer: Math.min(q.options.length - 1, Math.max(0, +q.answer || 0)), why: str(q.why),
+  }));
+
   $('#matGo').addEventListener('click', async () => {
     const status = $('#matStatus'), files = [...$('#matFiles').files];
     if (!getKey()) { status.textContent = 'Trage zuerst unter „Mehr“ deinen API-Key ein.'; return; }
@@ -489,36 +508,194 @@
     }
   });
 
+  /* ---------- Lernseite ---------- */
+  let learnId = null, prevView = 'today', onlyWeak = false, speechRate = 1;
+
+  const prog = it => (it.progress ||= { cards: {}, quiz: {} });
+
+  function progressOf(it) {
+    const m = it.material, p = it.progress || { cards: {}, quiz: {} };
+    let ok = 0, bad = 0;
+    m.cards.forEach((_, i) => { if (p.cards[i] === 1) ok++; else if (p.cards[i] === 0) bad++; });
+    m.quiz.forEach((_, i) => { if (p.quiz[i] === 1) ok++; else if (p.quiz[i] === 0) bad++; });
+    const total = m.cards.length + m.quiz.length;
+    return { total, ok, bad, open: total - ok - bad, pct: total ? Math.round(ok / total * 100) : 0 };
+  }
+
+  function progressHtml(it) {
+    const p = progressOf(it);
+    return `<div class="bar"><i style="width:${p.pct}%"></i></div>
+      <div><b>${p.pct}% gemeistert</b> · ✓ ${p.ok} gewusst · 🔁 ${p.bad} zu wiederholen · ${p.open} offen</div>
+      ${p.bad ? `<div class="row" style="justify-content:flex-start;flex-wrap:wrap">
+        <button class="ghost" data-act="lfilter">${onlyWeak ? 'Alles zeigen' : 'Nur Fehler zeigen'}</button>
+        <button class="primary" data-act="more">🔁 Neue Übungen zu meinen Fehlern</button></div>` : ''}
+      <div class="hint" id="lpMsg" style="text-align:left"></div>`;
+  }
+
   function openMaterial(id) {
-    const it = state.items.find(i => i.id === id);
-    if (!it || !it.material) return;
-    const m = it.material;
-    $('#matBody').innerHTML = `<h2>📖 ${esc(it.subject)} – ${esc(it.title)}</h2>
-      ${m.summary ? `<h2>Zusammenfassung</h2><p>${esc(m.summary).replace(/\n/g, '<br>')}</p>` : ''}
-      ${m.points.length ? `<h2>Merkpunkte</h2><ul>${m.points.map(p => `<li>${esc(p)}</li>`).join('')}</ul>` : ''}
-      ${m.cards.length ? `<h2>Karteikarten</h2><div class="muted">Erst überlegen, dann aufklappen.</div>${m.cards.map(c => `<details><summary>${esc(c.q)}</summary><p>${esc(c.a)}</p></details>`).join('')}` : ''}
-      ${m.quiz.length ? `<h2>Quiz</h2>${m.quiz.map((q, qi) => `<div class="card" data-quiz="${qi}"><b>${esc(q.q)}</b>
-        ${q.options.map((o, oi) => `<button class="qopt" data-act="quiz" data-id="${esc(it.id)}" data-qi="${qi}" data-oi="${oi}">${esc(o)}</button>`).join('')}
-        <div class="why" hidden></div></div>`).join('')}` : ''}`;
-    $('#matDlg').showModal();
-    $('#matDlg').scrollTop = 0;
+    if (view !== 'learn') prevView = view;
+    learnId = id; onlyWeak = false; view = 'learn';
+    render(); scrollTo(0, 0);
+  }
+
+  function vLearn() {
+    const it = state.items.find(i => i.id === learnId);
+    if (!it || !it.material) { view = 'tasks'; return vTasks(); }
+    const m = it.material, p = it.progress || { cards: {}, quiz: {} };
+    const tts = 'speechSynthesis' in window;
+    const sp = (kind, i = 0) => tts ? `<button class="ic sm" data-act="speak" data-kind="${kind}" data-i="${i}" aria-label="Vorlesen" title="Vorlesen">🔊</button>` : '';
+
+    let html = `<button class="ghost" data-act="back">← Zurück</button>
+      <h1>📖 ${esc(it.subject)} – ${esc(it.title)}</h1>
+      <div class="card" id="lp">${progressHtml(it)}</div>`;
+
+    if (tts) html += `<div class="card voice"><b>🔊 Vorlesen</b>
+      <button class="ghost" data-act="speak" data-kind="summary">Zusammenfassung</button>
+      <button class="ghost" data-act="speak" data-kind="points">Merkpunkte</button>
+      <button class="ghost" data-act="stopspeak">⏹ Stopp</button>
+      <label style="display:inline-block;margin:0 0 0 8px">Tempo
+        <select data-set="rate" style="display:inline-block;width:auto">
+          ${[[0.8, 'langsam'], [1, 'normal'], [1.25, 'schnell']].map(([v, l]) => `<option value="${v}" ${v === speechRate ? 'selected' : ''}>${l}</option>`).join('')}
+        </select></label></div>`;
+
+    if (!onlyWeak) {
+      if (m.summary) html += `<h2>Zusammenfassung ${sp('summary')}</h2><p>${esc(m.summary).replace(/\n/g, '<br>')}</p>`;
+      if (m.points.length) html += `<h2>Merkpunkte ${sp('points')}</h2><ul>${m.points.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    }
+    if ((m.notes || []).length) {
+      html += `<h2>Nochmal erklärt</h2>` + m.notes.map((n, i) => `<div class="card"><div class="ctop"><span>${esc(n).replace(/\n/g, '<br>')}</span>${sp('note', i)}</div></div>`).join('');
+    }
+
+    const cards = m.cards.map((c, i) => ({ c, i })).filter(({ i }) => !onlyWeak || p.cards[i] === 0);
+    if (cards.length) {
+      html += `<h2>Karteikarten</h2><div class="muted">Erst überlegen, dann die Antwort aufklappen und ehrlich bewerten.</div>`;
+      html += cards.map(({ c, i }) => `<div class="card lcard ${p.cards[i] === 1 ? 'known' : p.cards[i] === 0 ? 'unknown' : ''}">
+        <div class="ctop"><b>${c.extra ? '<span class="chip">Wiederholung</span> ' : ''}${esc(c.q)}</b>${sp('cardq', i)}</div>
+        <details><summary>Antwort zeigen</summary><p>${esc(c.a)} ${sp('carda', i)}</p>
+          <div class="row">
+            <button class="ghost" data-act="card" data-i="${i}" data-v="0">🔁 Nochmal üben</button>
+            <button class="ok" data-act="card" data-i="${i}" data-v="1">✓ Gewusst</button>
+          </div></details></div>`).join('');
+    }
+
+    const quiz = m.quiz.map((q, i) => ({ q, i })).filter(({ i }) => !onlyWeak || p.quiz[i] === 0);
+    if (quiz.length) {
+      html += `<h2>Quiz</h2>` + quiz.map(({ q, i }) => `<div class="card lcard ${p.quiz[i] === 1 ? 'known' : p.quiz[i] === 0 ? 'unknown' : ''}" data-quiz="${i}">
+        <div class="ctop"><b>${q.extra ? '<span class="chip">Wiederholung</span> ' : ''}${esc(q.q)}</b>${sp('quiz', i)}</div>
+        ${q.options.map((o, oi) => `<button class="qopt" data-act="quiz" data-id="${esc(it.id)}" data-qi="${i}" data-oi="${oi}">${esc(o)}</button>`).join('')}
+        <div class="why" hidden></div></div>`).join('');
+    }
+    if (onlyWeak && !cards.length && !quiz.length) html += `<div class="empty">Keine Fehler mehr offen. 🎉</div>`;
+    return html;
   }
 
   function answerQuiz(btn) {
     const it = state.items.find(i => i.id === btn.dataset.id);
-    const q = it && it.material.quiz[+btn.dataset.qi];
+    const qi = +btn.dataset.qi, q = it && it.material.quiz[qi];
     const box = btn.closest('[data-quiz]');
     if (!q || box.dataset.done) return;
     box.dataset.done = '1';
+    const right = +btn.dataset.oi === q.answer;
     box.querySelectorAll('.qopt').forEach((b, i) => {
       if (i === q.answer) b.classList.add('right');
       else if (b === btn) b.classList.add('wrong');
     });
     const why = $('.why', box);
-    why.textContent = (+btn.dataset.oi === q.answer ? '✓ Richtig. ' : '✗ Leider falsch. ') + q.why;
+    why.textContent = (right ? '✓ Richtig. ' : '✗ Leider falsch. ') + q.why;
     why.hidden = false;
+    prog(it).quiz[qi] = right ? 1 : 0;
+    box.classList.remove('known', 'unknown');
+    box.classList.add(right ? 'known' : 'unknown');
+    save();
+    $('#lp').innerHTML = progressHtml(it);
   }
-  $('#matClose').addEventListener('click', () => $('#matDlg').close());
+
+  function markCard(btn) {
+    const it = state.items.find(i => i.id === learnId);
+    prog(it).cards[+btn.dataset.i] = +btn.dataset.v;
+    save();
+    const box = btn.closest('.lcard');
+    box.classList.remove('known', 'unknown');
+    box.classList.add(+btn.dataset.v ? 'known' : 'unknown');
+    $('#lp').innerHTML = progressHtml(it);
+  }
+
+  /* Vorlesen (Browser-Sprachausgabe) */
+  function speakText(it, kind, i) {
+    const m = it.material;
+    switch (kind) {
+      case 'summary': return m.summary;
+      case 'points': return m.points.join('. ');
+      case 'note': return m.notes[i];
+      case 'cardq': return m.cards[i].q;
+      case 'carda': return m.cards[i].a;
+      case 'quiz': return `${m.quiz[i].q} ${m.quiz[i].options.map((o, k) => `${'ABCD'[k]}: ${o}`).join('. ')}`;
+      default: return '';
+    }
+  }
+  function stopSpeak() { if ('speechSynthesis' in window) speechSynthesis.cancel(); }
+  function speak(text) {
+    stopSpeak();
+    if (!text || !('speechSynthesis' in window)) return;
+    const voice = speechSynthesis.getVoices().find(v => v.lang.toLowerCase().startsWith('de'));
+    // satzweise vorlesen, sonst bricht die Ausgabe bei langen Texten in manchen Browsern ab
+    text.split(/(?<=[.!?])\s+|\n+/).map(s => s.trim()).filter(Boolean).forEach(s => {
+      const u = new SpeechSynthesisUtterance(s);
+      u.lang = 'de-DE';
+      if (voice) u.voice = voice;
+      u.rate = speechRate;
+      speechSynthesis.speak(u);
+    });
+  }
+
+  /* Neue Übungen zu den Fehlern */
+  const MORE_TOOL = {
+    name: 'uebungen',
+    description: 'Liefert neue Übungen zu den Schwächen des Schülers.',
+    input_schema: {
+      type: 'object',
+      required: ['explain', 'cards', 'quiz'],
+      properties: {
+        explain: { type: 'string', description: 'Kurze, einfache Erklärung der Konzepte, die der Schüler nicht sicher konnte' },
+        cards: TOOL.input_schema.properties.cards,
+        quiz: TOOL.input_schema.properties.quiz,
+      },
+    },
+  };
+
+  async function generateMore(btn) {
+    const it = state.items.find(i => i.id === learnId);
+    const msg = t => { const el = $('#lpMsg'); if (el) el.textContent = t; };
+    if (!getKey()) { msg('Trage zuerst unter „Mehr“ deinen API-Key ein.'); return; }
+    const m = it.material, p = it.progress || { cards: {}, quiz: {} };
+    const weak = [];
+    m.cards.forEach((c, i) => { if (p.cards[i] === 0) weak.push(`Karteikarte – Frage: ${c.q} | Antwort: ${c.a}`); });
+    m.quiz.forEach((q, i) => { if (p.quiz[i] === 0) weak.push(`Quizfrage: ${q.q} | richtig: ${q.options[q.answer]} | Erklärung: ${q.why}`); });
+    if (!weak.length) { msg('Es gibt keine Fehler zum Wiederholen.'); return; }
+    btn.disabled = true;
+    msg('⏳ Die KI erstellt neue Übungen zu deinen Fehlern …');
+    try {
+      const r = await callClaude([{
+        type: 'text',
+        text: `Du bist ein geduldiger Lerncoach. Ein Schüler lernt „${it.subject} – ${it.title}“. Zusammenfassung des Stoffs:\n${m.summary.slice(0, 3000)}\n\n` +
+          `Diese Aufgaben hat er nicht gewusst oder falsch beantwortet:\n- ${weak.join('\n- ')}\n\n` +
+          'Erkläre die zugrunde liegenden Konzepte noch einmal anders und einfacher (explain). Erstelle dann neue Übungen, die dieselben Konzepte ' +
+          'anders abfragen, damit er nicht nur Antworten auswendig lernt: 1–2 neue Karteikarten und 1–2 Multiple-Choice-Fragen (4 Antworten, mit Erklärung) pro Schwäche. ' +
+          'Antworte ausschließlich, indem du das Tool „uebungen“ aufrufst, ohne zusätzlichen Text.',
+      }], MORE_TOOL);
+      const cards = normCards(r.cards).map(c => ({ ...c, extra: true }));
+      const quiz = normQuiz(r.quiz).map(q => ({ ...q, extra: true }));
+      (m.notes ||= []).push(str(r.explain));
+      m.cards.push(...cards);
+      m.quiz.push(...quiz);
+      save(); onlyWeak = false; render();
+      msg(`✓ ${cards.length} neue Karteikarten und ${quiz.length} Quizfragen erstellt (weiter unten, markiert als „Wiederholung“).`);
+    } catch (err) {
+      btn.disabled = false;
+      msg(`⚠ ${err.message || 'Das hat nicht geklappt.'}`);
+    }
+  }
+
 
   /* ---------- Backup ---------- */
   function exportData() {
@@ -542,7 +719,7 @@
     } catch { alert('Die Datei konnte nicht gelesen werden.'); }
   });
 
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && !dlg.open && !$('#timerDlg').open) render(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && view !== 'learn' && !dlg.open && !$('#timerDlg').open) render(); });
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
   render();
 })();
