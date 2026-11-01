@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Lernplaner</title>
+<meta name="theme-color" content="#4f46e5">
+<meta name="description" content="Smarter Lernplaner: Hausaufgaben und Tests eintragen, der Plan entsteht automatisch.">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main id="view"></main>
+
+<button id="fab" aria-label="Neuer Eintrag">＋</button>
+
+<nav id="tabs">
+  <button data-view="today"><span>🏠</span>Heute</button>
+  <button data-view="week"><span>📅</span>Woche</button>
+  <button data-view="tasks"><span>✅</span>Einträge</button>
+  <button data-view="settings"><span>⚙️</span>Mehr</button>
+</nav>
+
+<dialog id="itemDlg">
+  <form id="itemForm">
+    <h2 id="itemDlgTitle">Neuer Eintrag</h2>
+    <label>Art
+      <select name="type">
+        <option value="hausaufgabe">📝 Hausaufgabe</option>
+        <option value="test">📚 Test</option>
+        <option value="pruefung">🎯 Prüfung</option>
+        <option value="projekt">🧩 Projekt / Referat</option>
+      </select>
+    </label>
+    <label>Fach
+      <input name="subject" list="subjects" required maxlength="30" placeholder="z. B. Mathe" autocomplete="off">
+      <datalist id="subjects"></datalist>
+    </label>
+    <label>Titel / Thema
+      <input name="title" required maxlength="80" placeholder="z. B. Quadratische Funktionen">
+    </label>
+    <label>Abgabe- bzw. Testdatum
+      <input name="due" type="date" required>
+    </label>
+    <label>Schwierigkeit für dich: <output id="diffOut">3</output>/5
+      <input name="difficulty" type="range" min="1" max="5" value="3">
+    </label>
+    <label>Geschätzte Lernzeit in Minuten <small>(leer = automatisch)</small>
+      <input name="effort" type="number" min="5" step="5" inputmode="numeric" placeholder="automatisch">
+    </label>
+    <div class="row">
+      <button type="button" class="ghost" id="itemCancel">Abbrechen</button>
+      <button type="submit" class="primary">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="timerDlg">
+  <div class="timer">
+    <div class="sub" id="tmTitle"></div>
+    <div class="meta" id="tmLabel"></div>
+    <div class="clock" id="tmTime">00:00</div>
+    <div class="row">
+      <button class="ghost" id="tmCancel">Abbrechen</button>
+      <button class="primary" id="tmGo">Start</button>
+      <button class="ok" id="tmDone">Fertig ✓</button>
+    </div>
+    <p class="hint">Handy in den Flugmodus oder weglegen – du schaffst das.</p>
+  </div>
+</dialog>
+
+<input type="file" id="importFile" accept="application/json" hidden>
+<script src="planner.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
