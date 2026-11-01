@@ -61,10 +61,11 @@
     T = P.ymd(new Date());
     PLAN = P.plan(state, T);
     document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === view));
-    $('#fab').hidden = ['settings', 'learn', 'write', 'pairs'].includes(view);
-    $('#view').innerHTML = ({ today: vToday, week: vWeek, tasks: vTasks, settings: vSettings, learn: vLearn, write: vWrite, pairs: vPairs })[view]();
-    $('#view').className = ['learn', 'write', 'pairs'].includes(view) ? 'learn' : '';
+    $('#fab').hidden = ['settings', 'learn', 'write', 'pairs', 'dictate'].includes(view);
+    $('#view').innerHTML = ({ today: vToday, week: vWeek, tasks: vTasks, settings: vSettings, learn: vLearn, write: vWrite, pairs: vPairs, dictate: vDictate })[view]();
+    $('#view').className = ['learn', 'write', 'pairs', 'dictate'].includes(view) ? 'learn' : '';
     if (view !== 'learn') stopSpeak(); else paintTimer();
+    if (view !== 'dictate') dictStop();
     if (view === 'write') { initCanvas(); const ti = $('#tinp'); if (ti) ti.focus(); }
   }
 
@@ -260,6 +261,12 @@
       case 'wagain': writeAgain(); break;
       case 'addvocab': addVocab(); break;
       case 'mnemo': mnemonic(b); break;
+      case 'dictate': dkText = null; view = 'dictate'; render(); scrollTo(0, 0); break;
+      case 'dback': view = 'learn'; render(); scrollTo(0, 0); break;
+      case 'dstart': dictStart(); break;
+      case 'dprev': dictSkip(0); break;
+      case 'dnext': dictSkip(1); break;
+      case 'dstop': dictStop(); break;
       case 'back': flushTimer(); view = prevView; render(); scrollTo(0, 0); break;
       case 'lfilter': onlyWeak = !onlyWeak; render(); break;
       case 'more': generateMore(b); break;
@@ -272,6 +279,7 @@
 
   document.addEventListener('change', e => {
     const t = e.target, s = state.settings;
+    if (t.dataset.dk) { s[t.dataset.dk] = t.type === 'checkbox' ? t.checked : +t.value; save(); return; }
     if (t.dataset.set === 'rate') { speechRate = +t.value; return; }
     if (t.dataset.set === 'wswap') { wr.swap = t.checked; wr.opts = null; render(); return; }
     if (t.dataset.wd !== undefined) s.week[+t.dataset.wd] = Math.max(0, +t.value || 0);
@@ -595,18 +603,19 @@
           ${[[0.8, 'langsam'], [1, 'normal'], [1.25, 'schnell']].map(([v, l]) => `<option value="${v}" ${v === speechRate ? 'selected' : ''}>${l}</option>`).join('')}
         </select></label></div>`;
 
-    if (m.cards.length) {
+    if (!onlyWeak) {
       const due = dueCount(it);
       html += `<div class="card"><b>🧠 Lernmodi</b>
         <div class="muted">Verschiedene Wege, den Stoff ins Gedächtnis zu bekommen. Wechsle ab, das merkt sich besser. Richtig gewusste Karten kommen nach und nach in größeren Abständen wieder.</div>
         <div class="modes">
-          <button class="ghost" data-act="write" data-mode="due">📅 Heute fällig (${due})</button>
+          ${m.cards.length ? `<button class="ghost" data-act="write" data-mode="due">📅 Heute fällig (${due})</button>
           <button class="ghost" data-act="write" data-mode="flash">🃏 Karteikarten</button>
           <button class="ghost" data-act="write" data-mode="type">⌨️ Tippen</button>
           <button class="ghost" data-act="write" data-mode="choice">🎯 Multiple Choice</button>
           <button class="ghost" data-act="write" data-mode="write">✍️ Mit Stift schreiben</button>
-          <button class="ghost" data-act="pairs">🧩 Paare finden</button>
+          <button class="ghost" data-act="pairs">🧩 Paare finden</button>` : ''}
           ${m.summary || m.points.length ? '<button class="ghost" data-act="write" data-mode="cloze">🕳 Lückentext</button>' : ''}
+          <button class="ghost" data-act="dictate">📝 Diktat</button>
         </div></div>`;
     }
     html += `<h2>Vokabeln hinzufügen</h2><div class="muted">Eine pro Zeile, z. B. „das Haus = the house“.</div>
@@ -901,6 +910,11 @@
     const want = drillTexts(state.items.find(i => i.id === learnId)).want;
     showVerdict(ti.value.trim(), want, compareWord(ti.value, want));
   }
+  document.addEventListener('input', e => {
+    const t = e.target;
+    if (t.id === 'dtext') dkText = t.value;
+    else if (t.dataset.dk === 'dictPause') $('#dpOut').textContent = t.value;
+  });
   document.addEventListener('keydown', e => {
     if (e.key === 'Enter' && e.target.id === 'tinp') { e.preventDefault(); checkTyped(); }
   });
@@ -1088,6 +1102,141 @@
     render();
   }
 
+  /* ---------- Diktat: Text wird abschnittsweise vorgelesen, dazwischen Schreibpause ---------- */
+  let dk = null, dkText = null;
+  const PUNCT = { ',': 'Komma', '.': 'Punkt', '?': 'Fragezeichen', '!': 'Ausrufezeichen', ':': 'Doppelpunkt', ';': 'Strichpunkt' };
+
+  // Text in kurze Diktier-Abschnitte teilen (Satz → Teilsätze → höchstens ~7 Wörter)
+  function dictPhrases(text) {
+    const out = [];
+    for (const sent of text.replace(/[ \t]+/g, ' ').split(/(?<=[.!?])\s+|\n+/)) {
+      const s = sent.trim();
+      if (!s) continue;
+      const merged = [];
+      for (const part of s.split(/(?<=[,;:])\s+/)) {
+        if (merged.length && merged[merged.length - 1].split(' ').length < 3) merged[merged.length - 1] += ' ' + part;
+        else merged.push(part);
+      }
+      for (const part of merged) {
+        const w = part.split(' '), n = Math.ceil(w.length / 7), size = Math.ceil(w.length / n);
+        for (let k = 0; k < w.length; k += size) out.push(w.slice(k, k + size).join(' '));
+      }
+    }
+    return out;
+  }
+  const dictSpoken = text => (state.settings.dictPunct ?? true) ? text.replace(/([,.?!:;])(?=\s|$)/g, (_, c) => ` ${PUNCT[c]} `) : text;
+
+  function vDictate() {
+    const it = state.items.find(i => i.id === learnId);
+    if (!it || !it.material) { view = 'tasks'; return vTasks(); }
+    const m = it.material, s = state.settings;
+    const back = '<button class="ghost" data-act="dback">← Zurück</button><h1>📝 Diktat</h1>';
+    if (!('speechSynthesis' in window)) return back + '<div class="alert">Dieser Browser kann nicht vorlesen.</div>';
+    if (dkText === null) dkText = [m.summary, ...m.points].filter(Boolean).join('\n');
+    const rate = s.dictRate ?? 0.9, pause = s.dictPause ?? 1.5;
+    return back + `<div class="muted">Die App liest den Text abschnittsweise vor. Danach hast du Zeit zum Schreiben (auf Papier oder auf dem Tablet). Am Ende siehst du den Originaltext zum Korrigieren.</div>
+      <div class="card">
+        <label>Lesetempo
+          <select data-dk="dictRate">${[[0.6, 'sehr langsam'], [0.75, 'langsam'], [0.9, 'normal'], [1.1, 'schnell']].map(([v, l]) => `<option value="${v}" ${v === rate ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label>Schreibzeit pro Wort: <output id="dpOut">${pause}</output> Sek.
+          <input type="range" min="0.5" max="4" step="0.25" value="${pause}" data-dk="dictPause"></label>
+        <label class="inl"><input type="checkbox" data-dk="dictRepeat" ${s.dictRepeat ? 'checked' : ''}> Jeden Abschnitt zweimal vorlesen</label>
+        <label class="inl"><input type="checkbox" data-dk="dictPunct" ${(s.dictPunct ?? true) ? 'checked' : ''}> Satzzeichen mitsprechen („Komma“, „Punkt“)</label>
+      </div>
+      <label>Diktattext <small>(du kannst ihn ändern oder einen eigenen Text einfügen)</small>
+        <textarea id="dtext" rows="8">${esc(dkText)}</textarea></label>
+      <div class="card"><div id="dstat">Bereit. Tippe auf Start.</div>
+        <div class="bar"><i id="dbar" style="width:0"></i></div>
+        <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
+          <button class="primary big" id="dgo" data-act="dstart">▶ Start</button>
+          <button class="ghost" data-act="dprev">⏮ Nochmal</button>
+          <button class="ghost" data-act="dnext">⏭ Weiter</button>
+          <button class="ghost" data-act="dstop">⏹ Stopp</button></div></div>
+      <div id="dresult" hidden></div>`;
+  }
+
+  function dictPaint() {
+    const st = $('#dstat');
+    if (!st) return;
+    const d = dk;
+    let txt = 'Bereit. Tippe auf Start.', btn = '▶ Start', pct = 0;
+    if (d) {
+      const n = d.phrases.length;
+      pct = Math.round(Math.min(d.i, n) / n * 100);
+      if (d.done) { txt = '✓ Diktat beendet. Vergleiche jetzt mit dem Originaltext.'; pct = 100; }
+      else if (!d.running) { txt = `⏸ Pausiert bei Abschnitt ${d.i + 1} von ${n}`; btn = '▶ Weiter'; }
+      else if (d.phase === 'write') {
+        txt = `✍️ Schreibe … noch ${Math.max(0, Math.ceil((d.waitEnd - Date.now()) / 1000))} s (Abschnitt ${d.i + 1} von ${n})`; btn = '⏸ Pause';
+      } else { txt = `🔊 Abschnitt ${d.i + 1} von ${n} wird vorgelesen`; btn = '⏸ Pause'; }
+    }
+    st.textContent = txt;
+    $('#dbar').style.width = pct + '%';
+    $('#dgo').textContent = btn;
+    const res = $('#dresult');
+    res.hidden = !(d && d.done);
+    if (!res.hidden) res.innerHTML = `<h2>Originaltext</h2><div class="card">${esc(d.text).replace(/\n/g, '<br>')}</div>`;
+  }
+
+  function dictHalt() {
+    if (!dk) return;
+    clearTimeout(dk.timer);
+    dk.token++;
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+  }
+  function dictStop() {
+    if (dk) { dictHalt(); clearInterval(dk.iv); dk = null; }
+    dictPaint();
+  }
+
+  function dictSay() {
+    const d = dk;
+    if (!d || !d.running) return;
+    if (d.i >= d.phrases.length) { d.running = false; d.done = true; clearInterval(d.iv); dictPaint(); return; }
+    const token = ++d.token;
+    const u = new SpeechSynthesisUtterance(dictSpoken(d.phrases[d.i]));
+    const voice = speechSynthesis.getVoices().find(v => v.lang.toLowerCase().startsWith('de'));
+    u.lang = 'de-DE';
+    if (voice) u.voice = voice;
+    u.rate = state.settings.dictRate ?? 0.9;
+    u.onend = () => { if (token === d.token && d.running) dictAfterSpeech(); };
+    d.u = u; // Referenz halten, sonst feuert onend in manchen Browsern nie
+    d.phase = 'speak';
+    speechSynthesis.speak(u);
+    dictPaint();
+  }
+  function dictAfterSpeech() {
+    const d = dk, s = state.settings;
+    if (s.dictRepeat && d.rep === 0) { d.rep = 1; d.phase = 'gap'; d.timer = setTimeout(dictSay, 700); return; }
+    d.rep = 0;
+    d.phase = 'write';
+    const words = d.phrases[d.i].split(/\s+/).length;
+    const ms = Math.round(Math.max(2, words * (s.dictPause ?? 1.5)) * 1000);
+    d.waitEnd = Date.now() + ms;
+    d.timer = setTimeout(() => { d.i++; dictSay(); }, ms);
+    dictPaint();
+  }
+
+  function dictStart() {
+    if (dk && !dk.done) {
+      if (dk.running) { dictHalt(); dk.running = false; }
+      else { dk.running = true; dictSay(); }
+      dictPaint();
+      return;
+    }
+    const text = ($('#dtext').value || '').trim();
+    if (!text) { $('#dstat').textContent = 'Füge zuerst einen Text ein.'; return; }
+    if (dk) clearInterval(dk.iv);
+    dk = { text, phrases: dictPhrases(text), i: 0, rep: 0, running: true, timer: null, token: 0, waitEnd: 0, done: false, phase: 'speak', iv: setInterval(dictPaint, 250) };
+    ensureRunning();
+    dictSay();
+  }
+  function dictSkip(step) {
+    if (!dk || dk.done) return;
+    dictHalt();
+    dk.i = Math.max(0, dk.i + step); dk.rep = 0; dk.running = true;
+    dictSay();
+  }
+
   /* Eselsbrücke per KI */
   const MNEMO_TOOL = {
     name: 'eselsbruecke',
@@ -1197,7 +1346,7 @@
   addEventListener('scroll', () => { toTop.hidden = scrollY < 300; }, { passive: true });
   toTop.addEventListener('click', () => scrollTo({ top: 0, behavior: 'smooth' }));
 
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && !['learn', 'write', 'pairs'].includes(view) && !dlg.open && !$('#timerDlg').open) render(); });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && !['learn', 'write', 'pairs', 'dictate'].includes(view) && !dlg.open && !$('#timerDlg').open) render(); });
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
   render();
 })();
