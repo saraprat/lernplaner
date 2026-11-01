@@ -150,3 +150,9 @@ textarea { display: block; width: 100%; margin-top: 6px; padding: 10px; border-r
 
 #dtext { font-size: 1.05rem; line-height: 1.5; }
 #dresult .card { font-size: 1.15rem; line-height: 1.6; }
+
+.dline { font-size: 1.2rem; line-height: 1.7; }
+.dw.wrong { background: color-mix(in srgb, var(--bad) 18%, transparent); border-radius: 6px; padding: 0 4px; }
+.dw.wrong s { color: var(--bad); }
+.dw.miss { border-bottom: 2px dotted var(--warn); color: var(--warn); }
+details > textarea { margin-top: 8px; }

@@ -66,7 +66,7 @@
     $('#view').className = ['learn', 'write', 'pairs', 'dictate'].includes(view) ? 'learn' : '';
     if (view !== 'learn') stopSpeak(); else paintTimer();
     if (view !== 'dictate') dictStop();
-    if (view === 'write') { initCanvas(); const ti = $('#tinp'); if (ti) ti.focus(); }
+    if (view === 'write' || view === 'dictate') { initCanvas(); const ti = $('#tinp'); if (ti) ti.focus(); }
   }
 
   /* ---------- Heute ---------- */
@@ -267,6 +267,10 @@
       case 'dprev': dictSkip(0); break;
       case 'dnext': dictSkip(1); break;
       case 'dstop': dictStop(); break;
+      case 'dplus': dictMoreTime(); break;
+      case 'dok': dk.override[+d.i] = true; dictPaint(); break;
+      case 'dcards': dictCards(); break;
+      case 'deval': dictEvaluate(); break;
       case 'back': flushTimer(); view = prevView; render(); scrollTo(0, 0); break;
       case 'lfilter': onlyWeak = !onlyWeak; render(); break;
       case 'more': generateMore(b); break;
@@ -279,7 +283,7 @@
 
   document.addEventListener('change', e => {
     const t = e.target, s = state.settings;
-    if (t.dataset.dk) { s[t.dataset.dk] = t.type === 'checkbox' ? t.checked : +t.value; save(); return; }
+    if (t.dataset.dk) { s[t.dataset.dk] = t.type === 'checkbox' ? t.checked : +t.value; save(); if (t.dataset.dk === 'dictWrite') { dictStop(); render(); } return; }
     if (t.dataset.set === 'rate') { speechRate = +t.value; return; }
     if (t.dataset.set === 'wswap') { wr.swap = t.checked; wr.opts = null; render(); return; }
     if (t.dataset.wd !== undefined) s.week[+t.dataset.wd] = Math.max(0, +t.value || 0);
@@ -1133,7 +1137,7 @@
     const back = '<button class="ghost" data-act="dback">← Zurück</button><h1>📝 Diktat</h1>';
     if (!('speechSynthesis' in window)) return back + '<div class="alert">Dieser Browser kann nicht vorlesen.</div>';
     if (dkText === null) dkText = [m.summary, ...m.points].filter(Boolean).join('\n');
-    const rate = s.dictRate ?? 0.9, pause = s.dictPause ?? 1.5;
+    const rate = s.dictRate ?? 0.9, pause = s.dictPause ?? 1.5, wOn = dictWriteOn();
     return back + `<div class="muted">Die App liest den Text abschnittsweise vor. Danach hast du Zeit zum Schreiben (auf Papier oder auf dem Tablet). Am Ende siehst du den Originaltext zum Korrigieren.</div>
       <div class="card">
         <label>Lesetempo
@@ -1142,16 +1146,22 @@
           <input type="range" min="0.5" max="4" step="0.25" value="${pause}" data-dk="dictPause"></label>
         <label class="inl"><input type="checkbox" data-dk="dictRepeat" ${s.dictRepeat ? 'checked' : ''}> Jeden Abschnitt zweimal vorlesen</label>
         <label class="inl"><input type="checkbox" data-dk="dictPunct" ${(s.dictPunct ?? true) ? 'checked' : ''}> Satzzeichen mitsprechen („Komma“, „Punkt“)</label>
+        <label class="inl"><input type="checkbox" data-dk="dictWrite" ${wOn ? 'checked' : ''}> Direkt in der App schreiben (Handschrift wird erkannt und geprüft)</label>
       </div>
-      <label>Diktattext <small>(du kannst ihn ändern oder einen eigenen Text einfügen)</small>
-        <textarea id="dtext" rows="8">${esc(dkText)}</textarea></label>
+      <details id="dtextwrap" ${wOn ? '' : 'open'}><summary>Diktattext ansehen oder ändern</summary>
+        <textarea id="dtext" rows="8">${esc(dkText)}</textarea></details>
       <div class="card"><div id="dstat">Bereit. Tippe auf Start.</div>
         <div class="bar"><i id="dbar" style="width:0"></i></div>
         <div class="row" style="justify-content:flex-start;flex-wrap:wrap">
           <button class="primary big" id="dgo" data-act="dstart">▶ Start</button>
           <button class="ghost" data-act="dprev">⏮ Nochmal</button>
-          <button class="ghost" data-act="dnext">⏭ Weiter</button>
+          <button class="ghost" data-act="dnext">${wOn ? '✓ Fertig, weiter' : '⏭ Weiter'}</button>
+          ${wOn ? '<button class="ghost" data-act="dplus">＋5 s</button>' : ''}
           <button class="ghost" data-act="dstop">⏹ Stopp</button></div></div>
+      ${wOn ? `<div class="muted">Schreibe hier, was du hörst (mit Stift oder Finger). Der Text ist während des Diktats ausgeblendet.</div>
+        <div class="padwrap"><canvas id="pad"></canvas></div>
+        <div class="row" style="justify-content:flex-start"><button class="ic" data-act="wundo" aria-label="Letzten Strich löschen">↶</button>
+          <button class="ic" data-act="wclear" aria-label="Alles löschen">🗑</button></div>` : ''}
       <div id="dresult" hidden></div>`;
   }
 
@@ -1163,7 +1173,10 @@
     if (d) {
       const n = d.phrases.length;
       pct = Math.round(Math.min(d.i, n) / n * 100);
-      if (d.done) { txt = '✓ Diktat beendet. Vergleiche jetzt mit dem Originaltext.'; pct = 100; }
+      if (d.done) {
+        txt = d.evaluating ? '⏳ Deine Handschrift wird erkannt und geprüft …' : d.evaluated ? '✓ Diktat ausgewertet.' : '✓ Diktat beendet. Vergleiche jetzt mit dem Originaltext.';
+        pct = 100;
+      }
       else if (!d.running) { txt = `⏸ Pausiert bei Abschnitt ${d.i + 1} von ${n}`; btn = '▶ Weiter'; }
       else if (d.phase === 'write') {
         txt = `✍️ Schreibe … noch ${Math.max(0, Math.ceil((d.waitEnd - Date.now()) / 1000))} s (Abschnitt ${d.i + 1} von ${n})`; btn = '⏸ Pause';
@@ -1174,7 +1187,7 @@
     $('#dgo').textContent = btn;
     const res = $('#dresult');
     res.hidden = !(d && d.done);
-    if (!res.hidden) res.innerHTML = `<h2>Originaltext</h2><div class="card">${esc(d.text).replace(/\n/g, '<br>')}</div>`;
+    if (!res.hidden) res.innerHTML = dictResultHtml(d);
   }
 
   function dictHalt() {
@@ -1191,7 +1204,11 @@
   function dictSay() {
     const d = dk;
     if (!d || !d.running) return;
-    if (d.i >= d.phrases.length) { d.running = false; d.done = true; clearInterval(d.iv); dictPaint(); return; }
+    if (d.i >= d.phrases.length) {
+      d.running = false; d.done = true; clearInterval(d.iv);
+      if (dictWriteOn()) dictEvaluate(); else dictPaint();
+      return;
+    }
     const token = ++d.token;
     const u = new SpeechSynthesisUtterance(dictSpoken(d.phrases[d.i]));
     const voice = speechSynthesis.getVoices().find(v => v.lang.toLowerCase().startsWith('de'));
@@ -1212,8 +1229,134 @@
     const words = d.phrases[d.i].split(/\s+/).length;
     const ms = Math.round(Math.max(2, words * (s.dictPause ?? 1.5)) * 1000);
     d.waitEnd = Date.now() + ms;
-    d.timer = setTimeout(() => { d.i++; dictSay(); }, ms);
+    d.timer = setTimeout(dictNext, ms);
     dictPaint();
+  }
+
+  /* Diktat direkt in der App schreiben: pro Abschnitt wird die Schrift gesichert, am Ende alles auf einmal erkannt und verglichen */
+  const dictWriteOn = () => state.settings.dictWrite ?? !!getKey();
+
+  function dictCapture() {
+    if (!dk || !dictWriteOn() || !pad || !pad.strokes.length) return;
+    dk.shots[dk.i] = exportPad();
+    padClear();
+  }
+  function dictNext() { dictCapture(); dk.i++; dictSay(); }
+  function dictMoreTime() {
+    if (!dk || !dk.running || dk.phase !== 'write') return;
+    clearTimeout(dk.timer);
+    dk.waitEnd += 5000;
+    dk.timer = setTimeout(dictNext, Math.max(0, dk.waitEnd - Date.now()));
+    dictPaint();
+  }
+
+  const DIKT_TOOL = {
+    name: 'diktat',
+    description: 'Liefert die Abschriften der handgeschriebenen Diktat-Abschnitte.',
+    input_schema: {
+      type: 'object',
+      required: ['texts'],
+      properties: { texts: { type: 'array', items: { type: 'string' }, description: 'Exakte Abschrift pro Bild, in der Reihenfolge der Abschnitte' } },
+    },
+  };
+
+  async function dictEvaluate() {
+    const d = dk;
+    d.evaluating = true; d.evalError = null;
+    dictPaint();
+    const idx = Object.keys(d.shots).map(Number).sort((a, b) => a - b);
+    try {
+      d.got = {};
+      if (idx.length) {
+        const content = [];
+        idx.forEach(i => content.push({ type: 'text', text: `Abschnitt ${i + 1}:` }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: d.shots[i] } }));
+        content.push({ type: 'text', text: 'Jedes Bild zeigt einen handgeschriebenen Abschnitt eines deutschen Diktats. Schreibe jeden Abschnitt exakt ab, Zeichen für Zeichen, ' +
+          'mit Satzzeichen, Groß-/Kleinschreibung, Umlauten und Rechtschreibung genau wie geschrieben. Korrigiere nichts und rate nicht, was gemeint sein könnte. ' +
+          'Unleserliche Zeichen schreibst du als „?“. Rufe das Tool „diktat“ mit einer Liste der Abschriften in der Reihenfolge der Abschnitte auf, ohne zusätzlichen Text.' });
+        const r = await callClaude(content, DIKT_TOOL, 2000);
+        idx.forEach((i, k) => { d.got[i] = str((r.texts || [])[k]); });
+      }
+      d.evaluated = true;
+    } catch (err) {
+      d.evalError = err.message || 'Die Auswertung hat nicht geklappt.';
+    }
+    d.evaluating = false;
+    if (dk === d) dictPaint();
+  }
+
+  const tokens = s => s.match(/[A-Za-zÄÖÜäöüß0-9]+(?:['’-][A-Za-zÄÖÜäöüß0-9]+)*|[.,;:!?]/g) || [];
+  // Wort-für-Wort-Vergleich (längste gemeinsame Teilfolge): ok, case (Groß-/Kleinschreibung), wrong (falsch geschrieben), miss (fehlt), extra (zu viel)
+  function diffTokens(want, got) {
+    const n = want.length, m = got.length, lw = want.map(x => x.toLowerCase()), lg = got.map(x => x.toLowerCase());
+    const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = lw[i] === lg[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+    const ops = [];
+    let i = 0, j = 0;
+    while (i < n || j < m) {
+      if (i < n && j < m && lw[i] === lg[j]) { ops.push({ t: want[i] === got[j] ? 'ok' : 'case', w: want[i], g: got[j] }); i++; j++; }
+      else if (j >= m || (i < n && dp[i + 1][j] >= dp[i][j + 1])) { ops.push({ t: 'miss', w: want[i] }); i++; }
+      else { ops.push({ t: 'extra', g: got[j] }); j++; }
+    }
+    // gleich viele fehlende und überzählige Wörter hintereinander = falsch geschriebenes Wort
+    const out = [];
+    let k = 0;
+    while (k < ops.length) {
+      if (ops[k].t === 'ok' || ops[k].t === 'case') { out.push(ops[k++]); continue; }
+      const miss = [], extra = [];
+      while (k < ops.length && (ops[k].t === 'miss' || ops[k].t === 'extra')) { (ops[k].t === 'miss' ? miss : extra).push(ops[k]); k++; }
+      const pairs = Math.min(miss.length, extra.length);
+      for (let x = 0; x < pairs; x++) out.push({ t: 'wrong', w: miss[x].w, g: extra[x].g });
+      out.push(...miss.slice(pairs), ...extra.slice(pairs));
+    }
+    return out;
+  }
+
+  function dictResultHtml(d) {
+    const orig = `<h2>Originaltext</h2><div class="card">${esc(d.text).replace(/\n/g, '<br>')}</div>`;
+    if (d.evalError) return `<div class="alert">⚠ ${esc(d.evalError)}</div><div class="row" style="justify-content:flex-start"><button class="primary" data-act="deval">Nochmal auswerten</button></div>${orig}`;
+    if (!d.evaluated) return d.evaluating ? '' : orig;
+    let total = 0, ok = 0, errors = 0;
+    const rows = d.phrases.map((ph, i) => {
+      const want = tokens(ph);
+      const ops = d.override[i] ? want.map(w => ({ t: 'ok', w })) : diffTokens(want, tokens(d.got[i] || ''));
+      d.ops[i] = ops;
+      total += want.length; ok += ops.filter(o => o.t === 'ok').length;
+      const bad = ops.some(o => o.t !== 'ok');
+      if (bad) errors++;
+      const line = ops.map((o, k) => {
+        const punct = /^[.,;:!?]$/.test(o.w || o.g);
+        const html = o.t === 'ok' ? esc(o.w)
+          : o.t === 'case' ? `<span class="dw wrong"><s>${esc(o.g)}</s> ${esc(o.w)}</span>`
+          : o.t === 'wrong' ? `<span class="dw wrong"><s>${esc(o.g)}</s> ${esc(o.w)}</span>`
+          : o.t === 'miss' ? `<span class="dw miss">${esc(o.w)}</span>`
+          : `<span class="dw wrong"><s>${esc(o.g)}</s></span>`;
+        return (punct && k ? '' : ' ') + html;
+      }).join('').trim();
+      return `<div class="card lcard ${bad ? 'unknown' : 'known'}"><div class="dline">${line}</div>
+        ${bad ? `<div class="hint" style="text-align:left">Du hast geschrieben: „${esc(d.got[i] || 'nichts')}“</div>
+        <button class="ghost" data-act="dok" data-i="${i}">Erkennung falsch, war richtig</button>` : ''}</div>`;
+    }).join('');
+    const pct = total ? Math.round(ok / total * 100) : 0;
+    return `<h2>Ergebnis: ${pct}% richtig</h2>
+      <div class="muted">${ok} von ${total} Wörtern und Satzzeichen richtig · ${errors} von ${d.phrases.length} Abschnitten mit Fehlern.
+        <span class="dw wrong"><s>falsch</s> richtig</span> = so hast du es geschrieben, so wäre es richtig · <span class="dw miss">fehlt</span> = vergessen.</div>
+      ${errors ? '<div class="row" style="justify-content:flex-start"><button class="primary" data-act="dcards">➕ Fehlerwörter als Karteikarten üben</button></div><div class="hint" id="dmsg" style="text-align:left"></div>' : ''}
+      ${rows}`;
+  }
+
+  // aus den Fehlern Lückenkarten machen, die man in Tippen/Stift/Wiederholungsplan üben kann
+  function dictCards() {
+    const it = state.items.find(i => i.id === learnId), cards = it.material.cards, added = [];
+    dk.phrases.forEach((ph, i) => (dk.ops[i] || []).forEach(o => {
+      if (!['wrong', 'miss', 'case'].includes(o.t) || !/[A-Za-zÄÖÜäöüß]/.test(o.w)) return;
+      const q = `Ergänze die Lücke im Diktat: ${ph.replace(o.w, '_____')}`;
+      if (!cards.some(c => c.q === q) && !added.some(c => c.q === q)) added.push({ q, a: o.w, key: o.w });
+    }));
+    cards.push(...added);
+    save();
+    $('#dmsg').textContent = added.length ? `✓ ${added.length} Karteikarten hinzugefügt. Du findest sie unter „Lernmodi“ (Tippen, Stift, Heute fällig).` : 'Diese Fehlerwörter sind schon als Karten vorhanden.';
   }
 
   function dictStart() {
@@ -1225,14 +1368,22 @@
     }
     const text = ($('#dtext').value || '').trim();
     if (!text) { $('#dstat').textContent = 'Füge zuerst einen Text ein.'; return; }
+    if (dictWriteOn() && !getKey()) {
+      $('#dstat').textContent = 'Zum Erkennen der Handschrift brauchst du den API-Key (unter „Mehr“). Oder schalte „Direkt in der App schreiben“ aus.';
+      return;
+    }
     if (dk) clearInterval(dk.iv);
-    dk = { text, phrases: dictPhrases(text), i: 0, rep: 0, running: true, timer: null, token: 0, waitEnd: 0, done: false, phase: 'speak', iv: setInterval(dictPaint, 250) };
+    padClear();
+    const wrap = $('#dtextwrap');
+    if (wrap && dictWriteOn()) wrap.open = false;
+    dk = { text, phrases: dictPhrases(text), i: 0, rep: 0, running: true, timer: null, token: 0, waitEnd: 0, done: false, phase: 'speak', shots: {}, override: {}, ops: {}, got: {}, iv: setInterval(dictPaint, 250) };
     ensureRunning();
     dictSay();
   }
   function dictSkip(step) {
     if (!dk || dk.done) return;
     dictHalt();
+    if (step > 0) dictCapture();
     dk.i = Math.max(0, dk.i + step); dk.rep = 0; dk.running = true;
     dictSay();
   }
