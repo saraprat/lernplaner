@@ -7,7 +7,7 @@
   const $ = (s, el = document) => el.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  const pad = n => String(n).padStart(2, '0');
+  const p2 = n => String(n).padStart(2, '0');
 
   const TIPS = {
     learn: 'Lies nicht nur: Fasse in eigenen Worten zusammen oder zeichne eine Mindmap.',
@@ -327,7 +327,7 @@
   let tm = null;
   const tmDraw = () => {
     const s = Math.max(0, Math.ceil(tm.left / 1000));
-    $('#tmTime').textContent = `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
+    $('#tmTime').textContent = `${p2(Math.floor(s / 60))}:${p2(s % 60)}`;
   };
   const tmRemaining = () => (tm.end ? tm.end - Date.now() : tm.left);
   function tmStop() { if (tm && tm.iv) clearInterval(tm.iv); }
@@ -696,7 +696,7 @@
   function paintTimer() {
     const el = $('#ltime');
     if (!el || !lt) return;
-    const f = ms => { const s = Math.floor(ms / 1000); return `${pad(Math.floor(s / 60))}:${pad(s % 60)}`; };
+    const f = ms => { const s = Math.floor(ms / 1000); return `${p2(Math.floor(s / 60))}:${p2(s % 60)}`; };
     el.textContent = f(ltElapsed()) + (lt.target ? ` / ${f(lt.target * 60000)}` : '');
     $('#lgo').textContent = lt.start ? '⏸ Pause' : ltElapsed() ? '▶ Weiter' : '▶ Lernen starten';
     $('#lnote').textContent = lt.note || '';
